@@ -68,10 +68,10 @@ SKIP_LLM_API_KEY_VERIFICATION = os.environ.get('SKIP_LLM_API_KEY_VERIFICATION', 
 class BrowserUseAgent(Agent):
     @time_execution_async('--run (agent)')
     async def run(
-            self, max_steps: int = 100, on_step_start: AgentHookFunc | None = None,
-            on_step_end: AgentHookFunc | None = None
-    ) -> AgentHistoryList:
-        """Execute the task with maximum number of steps"""
+        self, max_steps: int = 100, on_step_start: AgentHookFunc | None = None,
+        on_step_end: AgentHookFunc | None = None
+    ) -> str:
+        """Execute the task with maximum number of steps and return a final summary string."""
 
         loop = asyncio.get_event_loop()
 
@@ -86,6 +86,9 @@ class BrowserUseAgent(Agent):
             exit_on_second_int=True,
         )
         signal_handler.register()
+
+        # This will be our clean, final return value
+        final_result_string = ""
 
         # Wait for verification task to complete if it exists
         if hasattr(self, '_verification_task') and not self._verification_task.done():
@@ -113,11 +116,13 @@ class BrowserUseAgent(Agent):
                 # Check if we should stop due to too many failures
                 if self.state.consecutive_failures >= self.settings.max_failures:
                     logger.error(f'❌ Stopping due to {self.settings.max_failures} consecutive failures')
+                    final_result_string = f"Task stopped after {self.settings.max_failures} consecutive failures."
                     break
 
                 # Check control flags before each step
                 if self.state.stopped:
                     logger.info('Agent stopped')
+                    final_result_string = "Task stopped by user."
                     break
 
                 while self.state.paused:
@@ -140,21 +145,23 @@ class BrowserUseAgent(Agent):
                             continue
 
                     await self.log_completion()
+                    # Extract the successful result from the last step's output
+                    final_result_string = self.state.history.last().result.output or "Task completed successfully."
                     break
             else:
                 logger.info('❌ Failed to complete task in maximum steps')
-
-            return self.state.history
+                final_result_string = f"Task did not complete within the maximum of {max_steps} steps."
 
         except KeyboardInterrupt:
             # Already handled by our signal handler, but catch any direct KeyboardInterrupt as well
-            logger.info('Got KeyboardInterrupt during execution, returning current history')
-            return self.state.history
+            logger.info('Got KeyboardInterrupt during execution.')
+            final_result_string = "Task interrupted by user."
 
         finally:
             # Unregister signal handlers before cleanup
             signal_handler.unregister()
 
+            # This telemetry part remains unchanged and will work correctly
             self.telemetry.capture(
                 AgentEndTelemetryEvent(
                     agent_id=self.state.agent_id,
@@ -170,9 +177,13 @@ class BrowserUseAgent(Agent):
 
             await self.close()
 
+            # GIF generation also remains unchanged and will work correctly
             if self.settings.generate_gif:
                 output_path: str = 'agent_history.gif'
                 if isinstance(self.settings.generate_gif, str):
                     output_path = self.settings.generate_gif
 
                 create_history_gif(task=self.task, history=self.state.history, output_path=output_path)
+
+        # Return the final, clean string instead of the whole history object
+        return final_result_string
